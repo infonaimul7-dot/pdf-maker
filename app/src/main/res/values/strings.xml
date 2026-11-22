@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PDF Maker – Scanner &amp; Converter</string>
+    <string name="camera_permission_rationale">Camera access lets you scan physical documents directly into PDF pages. You can still convert images from your gallery without enabling the camera.</string>
+    <string name="pdf_created_success">PDF Created Successfully</string>
+    <string name="empty_library_title">No PDF files yet</string>
+    <string name="empty_library_subtitle">Import images from your gallery or scan a physical document to create your first PDF.</string>
+</resources>
