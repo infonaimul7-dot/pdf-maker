@@ -12,3 +12,12 @@
 # Google Mobile Ads (AdMob)
 -keep class com.google.android.gms.ads.** { *; }
 -dontwarn com.google.android.gms.ads.**
+
+# Guava / JSR305 / ErrorProne / CheckerFramework (R8 release minification)
+-dontwarn com.google.errorprone.annotations.**
+-dontwarn com.google.j2objc.annotations.**
+-dontwarn javax.annotation.**
+-dontwarn org.checkerframework.**
+-dontwarn org.codehaus.mojo.animal_sniffer.**
+-dontwarn java.lang.ClassValue
+-dontwarn sun.misc.Unsafe
