@@ -23,6 +23,27 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            val storePath = (project.findProperty("RELEASE_STORE_FILE") as String?)
+                ?: System.getenv("RELEASE_STORE_FILE")
+            if (!storePath.isNullOrBlank()) {
+                val candidate = java.io.File(storePath).let {
+                    if (it.isAbsolute) it else rootProject.file(storePath)
+                }
+                if (candidate.exists()) {
+                    storeFile = candidate
+                    storePassword = (project.findProperty("RELEASE_STORE_PASSWORD") as String?)
+                        ?: System.getenv("RELEASE_STORE_PASSWORD")
+                    keyAlias = (project.findProperty("RELEASE_KEY_ALIAS") as String?)
+                        ?: System.getenv("RELEASE_KEY_ALIAS")
+                    keyPassword = (project.findProperty("RELEASE_KEY_PASSWORD") as String?)
+                        ?: System.getenv("RELEASE_KEY_PASSWORD")
+                }
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -31,7 +52,12 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Configure signingConfig with release keystore before Play Store upload
+            val releaseSigning = signingConfigs.getByName("release")
+            signingConfig = if (releaseSigning.storeFile?.exists() == true) {
+                releaseSigning
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
         debug {
             applicationIdSuffix = ".debug"
@@ -83,7 +109,7 @@ dependencies {
 
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
-    implementation(libs.androidx.hilt.navigation.compose)
+    implementation(libs.androidx.hilt.navigation-compose)
 
     implementation(libs.androidx.camera.core)
     implementation(libs.androidx.camera.camera2)
@@ -93,6 +119,7 @@ dependencies {
     implementation(libs.mlkit.document.scanner)
     implementation(libs.mlkit.text.recognition)
     implementation(libs.pdfbox.android)
+    implementation(libs.play.services.ads)
 
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.coil.compose)
