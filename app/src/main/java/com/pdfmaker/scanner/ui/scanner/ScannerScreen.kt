@@ -275,6 +275,7 @@ fun ScannerScreen(
                 AndroidView(
                     factory = { ctx ->
                         val previewView = PreviewView(ctx).apply {
+                            scaleType = PreviewView.ScaleType.FIT_CENTER
                             layoutParams = ViewGroup.LayoutParams(
                                 ViewGroup.LayoutParams.MATCH_PARENT,
                                 ViewGroup.LayoutParams.MATCH_PARENT
