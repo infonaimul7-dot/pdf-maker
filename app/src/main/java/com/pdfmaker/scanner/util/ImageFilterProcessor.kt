@@ -7,14 +7,19 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
+import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.media.ExifInterface
 import android.net.Uri
+import android.os.Build
 import com.pdfmaker.scanner.data.model.QuadPoints
 import com.pdfmaker.scanner.data.model.ScanFilter
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.InputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.hypot
@@ -26,45 +31,134 @@ import kotlin.math.roundToInt
 class ImageFilterProcessor @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
+    private fun openUriStream(uri: Uri): InputStream? {
+        runCatching { context.contentResolver.openInputStream(uri) }.getOrNull()?.let { return it }
+        runCatching { context.contentResolver.openAssetFileDescriptor(uri, "r")?.createInputStream() }
+            .getOrNull()?.let { return it }
+        if (uri.scheme == "file") {
+            val path = uri.path
+            if (!path.isNullOrBlank()) {
+                val file = File(path)
+                if (file.exists()) return FileInputStream(file)
+            }
+        }
+        return null
+    }
+
     /**
      * Memory-safe bitmap decoding using inSampleSize so large gallery photos do not trigger OOM.
+     * Copies content:// URIs once to a temp file so Photo Picker grants and EXIF reads never fail.
      */
     fun decodeSampledBitmap(uri: Uri, maxDimensionPx: Int): Bitmap {
-        val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        context.contentResolver.openInputStream(uri)?.use { stream ->
-            BitmapFactory.decodeStream(stream, null, boundsOpts)
-        } ?: throw IllegalStateException("Unable to read image at $uri")
+        var tempCopy: File? = null
+        try {
+            val sourceFile: File? = if (uri.scheme == "file" && !uri.path.isNullOrBlank()) {
+                File(uri.path!!).takeIf { it.exists() }
+            } else {
+                openUriStream(uri)?.use { input ->
+                    val tmp = File.createTempFile("pdf_img_", ".tmp", context.cacheDir)
+                    FileOutputStream(tmp).use { out -> input.copyTo(out) }
+                    tempCopy = tmp
+                    tmp
+                }
+            }
 
-        val srcW = boundsOpts.outWidth
-        val srcH = boundsOpts.outHeight
-        if (srcW <= 0 || srcH <= 0) {
-            throw IllegalArgumentException("Unsupported or corrupted image format.")
+            if (sourceFile == null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    val decoded = runCatching {
+                        val source = ImageDecoder.createSource(context.contentResolver, uri)
+                        ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                            decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                            val maxSide = max(info.size.width, info.size.height)
+                            if (maxSide > maxDimensionPx) {
+                                val ratio = maxDimensionPx.toFloat() / maxSide.toFloat()
+                                decoder.setTargetSize(
+                                    (info.size.width * ratio).roundToInt().coerceAtLeast(1),
+                                    (info.size.height * ratio).roundToInt().coerceAtLeast(1)
+                                )
+                            }
+                        }
+                    }.getOrNull()
+                    if (decoded != null) return decoded
+                }
+                throw IllegalStateException("Cannot open image stream at $uri")
+            }
+
+            val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(sourceFile.absolutePath, boundsOpts)
+
+            val srcW = boundsOpts.outWidth
+            val srcH = boundsOpts.outHeight
+            if (srcW <= 0 || srcH <= 0) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    val fallback = runCatching {
+                        val source = ImageDecoder.createSource(sourceFile)
+                        ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                            decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                            val maxSide = max(info.size.width, info.size.height)
+                            if (maxSide > maxDimensionPx) {
+                                val ratio = maxDimensionPx.toFloat() / maxSide.toFloat()
+                                decoder.setTargetSize(
+                                    (info.size.width * ratio).roundToInt().coerceAtLeast(1),
+                                    (info.size.height * ratio).roundToInt().coerceAtLeast(1)
+                                )
+                            }
+                        }
+                    }.getOrNull()
+                    if (fallback != null) return fallback
+                }
+                throw IllegalArgumentException("Unsupported or corrupted image format.")
+            }
+
+            var sampleSize = 1
+            while (max(srcW / sampleSize, srcH / sampleSize) > maxDimensionPx * 2) {
+                sampleSize *= 2
+            }
+
+            val exifOrientation = runCatching {
+                ExifInterface(sourceFile.absolutePath).getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL
+                )
+            }.getOrNull() ?: ExifInterface.ORIENTATION_NORMAL
+
+            val decodeOpts = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+
+            val rawDecoded = BitmapFactory.decodeFile(sourceFile.absolutePath, decodeOpts)
+                ?: throw IllegalStateException("Failed to decode image file.")
+
+            val exifDegrees = when (exifOrientation) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                else -> 0f
+            }
+
+            val oriented = if (exifDegrees != 0f) {
+                val m = Matrix().apply { postRotate(exifDegrees) }
+                val rotated = Bitmap.createBitmap(rawDecoded, 0, 0, rawDecoded.width, rawDecoded.height, m, true)
+                if (rotated != rawDecoded) rawDecoded.recycle()
+                rotated
+            } else {
+                rawDecoded
+            }
+
+            // Scale cleanly down (never upscale low-res scans)
+            val maxActual = max(oriented.width, oriented.height)
+            if (maxActual <= maxDimensionPx) return oriented
+
+            val ratio = maxDimensionPx.toFloat() / maxActual.toFloat()
+            val targetW = (oriented.width * ratio).roundToInt().coerceAtLeast(1)
+            val targetH = (oriented.height * ratio).roundToInt().coerceAtLeast(1)
+            val scaled = Bitmap.createScaledBitmap(oriented, targetW, targetH, true)
+            if (scaled != oriented) oriented.recycle()
+            return scaled
+        } finally {
+            tempCopy?.delete()
         }
-
-        var sampleSize = 1
-        while (max(srcW / sampleSize, srcH / sampleSize) > maxDimensionPx * 2) {
-            sampleSize *= 2
-        }
-
-        val decodeOpts = BitmapFactory.Options().apply {
-            inSampleSize = sampleSize
-            inPreferredConfig = Bitmap.Config.ARGB_8888
-        }
-
-        val decoded = context.contentResolver.openInputStream(uri)?.use { stream ->
-            BitmapFactory.decodeStream(stream, null, decodeOpts)
-        } ?: throw IllegalStateException("Failed to decode image stream.")
-
-        // Scale cleanly down (never upscale low-res scans)
-        val maxActual = max(decoded.width, decoded.height)
-        if (maxActual <= maxDimensionPx) return decoded
-
-        val ratio = maxDimensionPx.toFloat() / maxActual.toFloat()
-        val targetW = (decoded.width * ratio).roundToInt().coerceAtLeast(1)
-        val targetH = (decoded.height * ratio).roundToInt().coerceAtLeast(1)
-        val scaled = Bitmap.createScaledBitmap(decoded, targetW, targetH, true)
-        if (scaled != decoded) decoded.recycle()
-        return scaled
     }
 
     fun applyEdits(
