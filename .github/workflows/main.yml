@@ -27,11 +27,46 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Debug APK
-        run: gradle assembleDebug --stacktrace
+      - name: Prepare Release Keystore
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          SECRET_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          SECRET_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          SECRET_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          rm -f app/release-keystore.jks
+          if [ -n "$RELEASE_KEYSTORE_BASE64" ]; then
+            echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > app/release-keystore.jks
+            echo "RELEASE_STORE_FILE=app/release-keystore.jks" >> "$GITHUB_ENV"
+            echo "RELEASE_STORE_PASSWORD=$SECRET_STORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "RELEASE_KEY_ALIAS=$SECRET_KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "RELEASE_KEY_PASSWORD=$SECRET_KEY_PASSWORD" >> "$GITHUB_ENV"
+          else
+            keytool -genkeypair -v \
+              -keystore app/release-keystore.jks \
+              -alias pdfmaker \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass pdfmaker123 -keypass pdfmaker123 \
+              -dname "CN=PDF Maker, OU=Mobile, O=PdfMaker, L=Dhaka, ST=Dhaka, C=BD"
+            echo "RELEASE_STORE_FILE=app/release-keystore.jks" >> "$GITHUB_ENV"
+            echo "RELEASE_STORE_PASSWORD=pdfmaker123" >> "$GITHUB_ENV"
+            echo "RELEASE_KEY_ALIAS=pdfmaker" >> "$GITHUB_ENV"
+            echo "RELEASE_KEY_PASSWORD=pdfmaker123" >> "$GITHUB_ENV"
+          fi
 
-      - name: Upload Debug APK
+      - name: Build Debug APK, Release APK, and Release AAB
+        run: gradle assembleDebug assembleRelease bundleRelease --stacktrace
+
+      - name: Upload APK Files
         uses: actions/upload-artifact@v4
         with:
-          name: pdf-maker-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: pdf-maker-apk
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/release/*.apk
+
+      - name: Upload AAB File
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdf-maker-aab
+          path: app/build/outputs/bundle/release/*.aab
