@@ -28,9 +28,7 @@ android {
             val storePath = (project.findProperty("RELEASE_STORE_FILE") as String?)
                 ?: System.getenv("RELEASE_STORE_FILE")
             if (!storePath.isNullOrBlank()) {
-                val candidate = java.io.File(storePath).let {
-                    if (it.isAbsolute) it else rootProject.file(storePath)
-                }
+                val candidate = rootProject.file(storePath)
                 if (candidate.exists()) {
                     storeFile = candidate
                     storePassword = (project.findProperty("RELEASE_STORE_PASSWORD") as String?)
@@ -109,7 +107,7 @@ dependencies {
 
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
-    implementation(libs.androidx.hilt.navigation-compose)
+    implementation(libs.androidx.hilt.navigation.compose)
 
     implementation(libs.androidx.camera.core)
     implementation(libs.androidx.camera.camera2)
