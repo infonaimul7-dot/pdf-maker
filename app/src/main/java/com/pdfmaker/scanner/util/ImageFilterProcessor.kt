@@ -13,6 +13,7 @@ import android.graphics.Paint
 import android.media.ExifInterface
 import android.net.Uri
 import android.os.Build
+import com.pdfmaker.scanner.data.model.NormalizedPoint
 import com.pdfmaker.scanner.data.model.QuadPoints
 import com.pdfmaker.scanner.data.model.ScanFilter
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -22,6 +23,7 @@ import java.io.FileOutputStream
 import java.io.InputStream
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
@@ -257,6 +259,188 @@ class ImageFilterProcessor @Inject constructor(
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         canvas.drawBitmap(source, matrix, paint)
         return result
+    }
+
+    /**
+     * Automatic document boundary detector combining gradient edges and border contrast
+     * with 5x5 neighborhood noise filtering so gallery photos and scans auto-crop cleanly.
+     */
+    fun detectDocumentBounds(source: Bitmap): QuadPoints {
+        val fallback = QuadPoints(
+            topLeft = NormalizedPoint(0.05f, 0.05f),
+            topRight = NormalizedPoint(0.95f, 0.05f),
+            bottomRight = NormalizedPoint(0.95f, 0.95f),
+            bottomLeft = NormalizedPoint(0.05f, 0.95f)
+        )
+        if (source.width < 32 || source.height < 32) return fallback
+
+        val maxSide = 240f
+        val scale = min(1f, maxSide / max(source.width, source.height).toFloat())
+        val w = (source.width * scale).roundToInt().coerceAtLeast(32)
+        val h = (source.height * scale).roundToInt().coerceAtLeast(32)
+        val scaled = if (w != source.width || h != source.height) {
+            Bitmap.createScaledBitmap(source, w, h, true)
+        } else {
+            source
+        }
+
+        try {
+            val pixels = IntArray(w * h)
+            scaled.getPixels(pixels, 0, w, 0, 0, w, h)
+
+            val lum = IntArray(w * h)
+            var borderSum = 0L
+            var borderCount = 0
+            for (y in 0 until h) {
+                for (x in 0 until w) {
+                    val idx = y * w + x
+                    val c = pixels[idx]
+                    val l = (Color.red(c) * 299 + Color.green(c) * 587 + Color.blue(c) * 114) / 1000
+                    lum[idx] = l
+                    if (x < 3 || x >= w - 3 || y < 3 || y >= h - 3) {
+                        borderSum += l
+                        borderCount++
+                    }
+                }
+            }
+            val bgLum = if (borderCount > 0) (borderSum / borderCount).toInt() else 128
+
+            val grad = IntArray(w * h)
+            var gradSum = 0L
+            var interiorCount = 0
+            for (y in 1 until h - 1) {
+                for (x in 1 until w - 1) {
+                    val idx = y * w + x
+                    val gx = abs(lum[idx + 1] - lum[idx - 1])
+                    val gy = abs(lum[idx + w] - lum[idx - w])
+                    val g = gx + gy
+                    grad[idx] = g
+                    gradSum += g
+                    interiorCount++
+                }
+            }
+
+            val meanGrad = if (interiorCount > 0) gradSum.toFloat() / interiorCount else 20f
+            val edgeThreshold = max(44, (meanGrad * 2.1f).roundToInt())
+
+            val rawEdge = BooleanArray(w * h)
+            for (y in 2 until h - 2) {
+                for (x in 2 until w - 2) {
+                    val idx = y * w + x
+                    val borderDiff = abs(lum[idx] - bgLum)
+                    rawEdge[idx] = grad[idx] >= edgeThreshold || (borderDiff >= 34 && grad[idx] >= 22)
+                }
+            }
+
+            var supportedCount = 0
+            var minX = w
+            var maxX = 0
+            var minY = h
+            var maxY = 0
+
+            var tlX = 0
+            var tlY = 0
+            var tlScore = Int.MAX_VALUE
+
+            var trX = w - 1
+            var trY = 0
+            var trScore = Int.MIN_VALUE
+
+            var brX = w - 1
+            var brY = h - 1
+            var brScore = Int.MIN_VALUE
+
+            var blX = 0
+            var blY = h - 1
+            var blScore = Int.MAX_VALUE
+
+            for (y in 2 until h - 2) {
+                for (x in 2 until w - 2) {
+                    val idx = y * w + x
+                    if (!rawEdge[idx]) continue
+
+                    var neighbors = 0
+                    for (dy in -2..2) {
+                        val rowOffset = (y + dy) * w
+                        for (dx in -2..2) {
+                            if (dx == 0 && dy == 0) continue
+                            if (rawEdge[rowOffset + x + dx]) neighbors++
+                        }
+                    }
+                    if (neighbors < 2) continue
+
+                    supportedCount++
+                    if (x < minX) minX = x
+                    if (x > maxX) maxX = x
+                    if (y < minY) minY = y
+                    if (y > maxY) maxY = y
+
+                    val sum = x + y
+                    val diff = x - y
+                    if (sum < tlScore) {
+                        tlScore = sum
+                        tlX = x
+                        tlY = y
+                    }
+                    if (diff > trScore) {
+                        trScore = diff
+                        trX = x
+                        trY = y
+                    }
+                    if (sum > brScore) {
+                        brScore = sum
+                        brX = x
+                        brY = y
+                    }
+                    if (diff < blScore) {
+                        blScore = diff
+                        blX = x
+                        blY = y
+                    }
+                }
+            }
+
+            if (supportedCount < 20 || (maxX - minX) < w * 0.28f || (maxY - minY) < h * 0.28f) {
+                return fallback
+            }
+
+            val pad = 0.025f
+            val nTlX = (tlX.toFloat() / w - pad).coerceIn(0.01f, 0.45f)
+            val nTlY = (tlY.toFloat() / h - pad).coerceIn(0.01f, 0.45f)
+            val nTrX = (trX.toFloat() / w + pad).coerceIn(0.55f, 0.99f)
+            val nTrY = (trY.toFloat() / h - pad).coerceIn(0.01f, 0.45f)
+            val nBrX = (brX.toFloat() / w + pad).coerceIn(0.55f, 0.99f)
+            val nBrY = (brY.toFloat() / h + pad).coerceIn(0.55f, 0.99f)
+            val nBlX = (blX.toFloat() / w - pad).coerceIn(0.01f, 0.45f)
+            val nBlY = (blY.toFloat() / h + pad).coerceIn(0.55f, 0.99f)
+
+            val validQuad = (nTrX - nTlX >= 0.25f) &&
+                (nBrX - nBlX >= 0.25f) &&
+                (nBlY - nTlY >= 0.25f) &&
+                (nBrY - nTrY >= 0.25f)
+
+            if (validQuad) {
+                return QuadPoints(
+                    topLeft = NormalizedPoint(nTlX, nTlY),
+                    topRight = NormalizedPoint(nTrX, nTrY),
+                    bottomRight = NormalizedPoint(nBrX, nBrY),
+                    bottomLeft = NormalizedPoint(nBlX, nBlY)
+                )
+            }
+
+            val left = (minX.toFloat() / w - pad).coerceIn(0.01f, 0.45f)
+            val right = (maxX.toFloat() / w + pad).coerceIn(0.55f, 0.99f)
+            val top = (minY.toFloat() / h - pad).coerceIn(0.01f, 0.45f)
+            val bottom = (maxY.toFloat() / h + pad).coerceIn(0.55f, 0.99f)
+            return QuadPoints(
+                topLeft = NormalizedPoint(left, top),
+                topRight = NormalizedPoint(right, top),
+                bottomRight = NormalizedPoint(right, bottom),
+                bottomLeft = NormalizedPoint(left, bottom)
+            )
+        } finally {
+            if (scaled != source) scaled.recycle()
+        }
     }
 
     private fun buildColorMatrix(saturation: Float, contrast: Float, brightness: Float): ColorMatrix {
