@@ -1,5 +1,8 @@
 package com.pdfmaker.scanner.ui.components
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -11,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -29,6 +33,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,10 +44,20 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import com.google.android.gms.ads.AdError
+import com.google.android.gms.ads.AdRequest
+import com.google.android.gms.ads.AdSize
+import com.google.android.gms.ads.AdView
+import com.google.android.gms.ads.FullScreenContentCallback
+import com.google.android.gms.ads.LoadAdError
+import com.google.android.gms.ads.interstitial.InterstitialAd
+import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback
 import com.pdfmaker.scanner.ui.theme.BrandCoral
 import com.pdfmaker.scanner.ui.theme.BrandOrange
 import com.pdfmaker.scanner.ui.theme.BrandRed
@@ -269,5 +284,95 @@ fun formatRelativeDate(millis: Long): String {
         mins < 60 -> "$mins min ago"
         mins < 1440 -> "${mins / 60} hr ago"
         else -> SimpleDateFormat("MMM d, yyyy", Locale.US).format(Date(millis))
+    }
+}
+
+object AdMobTestIds {
+    // Official Google AdMob Test Ad Unit IDs (Replace with real IDs before Play Store release)
+    const val BANNER = "ca-app-pub-3940256099942544/6300978111"
+    const val INTERSTITIAL = "ca-app-pub-3940256099942544/1033173712"
+}
+
+tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+@Composable
+fun AdMobBannerAd(
+    modifier: Modifier = Modifier,
+    adUnitId: String = AdMobTestIds.BANNER
+) {
+    val context = LocalContext.current
+    val adView = remember(adUnitId) {
+        AdView(context).apply {
+            setAdSize(AdSize.BANNER)
+            this.adUnitId = adUnitId
+            runCatching {
+                loadAd(AdRequest.Builder().build())
+            }
+        }
+    }
+
+    DisposableEffect(adView) {
+        onDispose {
+            adView.destroy()
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 50.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        AndroidView(factory = { adView })
+    }
+}
+
+object AdMobInterstitialManager {
+    fun loadAndShow(
+        context: Context,
+        adUnitId: String = AdMobTestIds.INTERSTITIAL,
+        onFinished: () -> Unit = {}
+    ) {
+        val activity = context.findActivity()
+        if (activity == null || activity.isFinishing || activity.isDestroyed) {
+            onFinished()
+            return
+        }
+        runCatching {
+            InterstitialAd.load(
+                activity,
+                adUnitId,
+                AdRequest.Builder().build(),
+                object : InterstitialAdLoadCallback() {
+                    override fun onAdLoaded(interstitialAd: InterstitialAd) {
+                        if (activity.isFinishing || activity.isDestroyed) {
+                            onFinished()
+                            return
+                        }
+                        interstitialAd.fullScreenContentCallback =
+                            object : FullScreenContentCallback() {
+                                override fun onAdDismissedFullScreenContent() {
+                                    onFinished()
+                                }
+
+                                override fun onAdFailedToShowFullScreenContent(adError: AdError) {
+                                    onFinished()
+                                }
+                            }
+                        interstitialAd.show(activity)
+                    }
+
+                    override fun onAdFailedToLoad(loadAdError: LoadAdError) {
+                        onFinished()
+                    }
+                }
+            )
+        }.onFailure {
+            onFinished()
+        }
     }
 }
