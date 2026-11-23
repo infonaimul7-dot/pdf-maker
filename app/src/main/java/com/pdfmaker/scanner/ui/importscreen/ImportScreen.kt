@@ -150,6 +150,7 @@ fun ImportScreen(
                             modifier = Modifier
                                 .aspectRatio(0.82f)
                                 .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
                                 .border(
                                     width = if (isSelected) 2.5.dp else 1.dp,
                                     color = if (isSelected) BrandRed else MaterialTheme.colorScheme.outline,
@@ -166,8 +167,10 @@ fun ImportScreen(
                             AsyncImage(
                                 model = uri,
                                 contentDescription = "Imported photo",
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(2.dp)
                             )
 
                             Box(
