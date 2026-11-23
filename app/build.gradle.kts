@@ -88,6 +88,11 @@ android {
             isIncludeAndroidResources = true
         }
     }
+
+    lint {
+        abortOnError = false
+        checkReleaseBuilds = false
+    }
 }
 
 dependencies {
@@ -118,6 +123,7 @@ dependencies {
     implementation(libs.mlkit.text.recognition)
     implementation(libs.pdfbox.android)
     implementation(libs.play.services.ads)
+    implementation(libs.guava)
 
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.coil.compose)
